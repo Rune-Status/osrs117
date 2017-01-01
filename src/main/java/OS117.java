@@ -13,7 +13,9 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public final class OS117 {
   private static final BigInteger RSA_EXPONENT = new BigInteger("83417783738053606360795816602207191953304846609474320732476402573404186036614343850219601956066771360994386107416321866148159473079678674374687720403874067122985493106284338371079659182148666792926231395427671452828855023970154106448655638043362091362460709669211465368060966770299219318096643511694237100033");
@@ -244,13 +246,91 @@ public final class OS117 {
 
                 // ----- end of login decoding -----
 
-                ByteBuf response = ctx.alloc().buffer(2);
+                int ownPlayerIdx = 1;
+                int playerCap = (1 << 11);
+
+                int regionX = 50;
+                int regionY = 50;
+                int tileX = 22;
+                int tileY = 22;
+                int plane = 0;
+
+                int chunkSize = 8;
+                int chunkX = (regionX * chunkSize);
+                int chunkY = (regionY * chunkSize);
+
+                int absX = (chunkX * chunkSize) | tileX;
+                int absY = (chunkY * chunkSize) | tileY;
+
+                int ownPlayerLocHash = absY | (plane << 28 | absX << 14);
+
+                // map region packet
+                ByteBuf regionPkt = ctx.alloc().buffer(256);
+
+                regionPkt.writeByte(chunkX + 128);
+                regionPkt.writeByte((chunkX >> 8));
+
+                regionPkt.writeByte((chunkX >> 8));
+                regionPkt.writeByte(chunkX + 128);
+
+                Set<Integer> surroundingRegions = new HashSet<>();
+                for (int y = (chunkY - 6) / 8; y <= (chunkY + 6) / 8; y++) {
+                  for (int x = (chunkX - 6) / 8; x <= (chunkX + 6) / 8; x++) {
+                    int id = y << 8 | x;
+
+                    if (!surroundingRegions.contains(id)) {
+                      surroundingRegions.add(id);
+                    }
+                  }
+                }
+
+                regionPkt.writeShort(surroundingRegions.size());
+                for (int i = 0; i < surroundingRegions.size(); i++) {
+                  for (int z = 0; z < 4; z++) {
+                    regionPkt.writeInt(0);
+                  }
+                }
+
+                // player initialization
+                PacketStream stream = new PacketStream(ctx.alloc());
+                stream.bitAccess();
+
+                stream.writeBits(30, ownPlayerLocHash);
+
+                for (int i = 1; i < (playerCap - 1); i++) {
+                  if (i != ownPlayerIdx) {
+                    stream.writeBits(18, 0);
+                  }
+                }
+
+                stream.writeBits(18, 50 | 0 << 16 | 50 << 8);
+                stream.byteAccess();
+
+                // login response
+                ByteBuf response = ctx.alloc().buffer(4096);
                 response.writeByte(2); // response code
                 response.writeByte(0); // TODO identify
+                response.writeInt(0);
                 response.writeByte(2); // privilege level
                 response.writeByte(0); // flagged
-                response.writeShort(1); // player index
+                response.writeShort(ownPlayerIdx); // player index
                 response.writeByte(1); // member subscription
+
+                response.writeByte(42); // TODO isaac
+                response.writeShort(regionPkt.readableBytes() + stream.buffer.readableBytes());
+
+                response.writeBytes(stream.buffer); // player init
+                response.writeBytes(regionPkt); // region change
+
+                // window pane
+                response.writeByte(32);
+                response.writeByte((165 >> 8));
+                response.writeByte(165 + 128);
+
+                response.writeByte(32);
+                response.writeByte((548 >> 8));
+                response.writeByte(548 + 128);
+
                 ctx.writeAndFlush(response, ctx.voidPromise());
               }
 
@@ -267,6 +347,59 @@ public final class OS117 {
 
     private enum Sequence {
       HANDSHAKE, ONDEMAND, LOGIN, GAME
+    }
+  }
+
+  private static class PacketStream {
+    private static final int[] BIT_MASK = new int[32];
+
+    static {
+      for (int i = 0; i < BIT_MASK.length; i++) {
+        BIT_MASK[i] = ((1 << i) - 1);
+      }
+    }
+
+    private int bitIndex;
+    public final ByteBuf buffer;
+
+    public PacketStream(ByteBufAllocator buffer) {
+      this.buffer = buffer.buffer(8192);
+    }
+
+    public PacketStream bitAccess() {
+      bitIndex = buffer.writerIndex() * 8;
+
+      return this;
+    }
+
+    public PacketStream writeBits(int amtBits, int value) {
+      int bytePos = bitIndex >> 3;
+      int bitOffset = 8 - (bitIndex & 7);
+
+      bitIndex += amtBits;
+
+      for(; amtBits > bitOffset; bitOffset = 8) {
+        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~BIT_MASK[bitOffset]);
+        buffer.setByte(bytePos++, buffer.getByte(bytePos) | (value >> (amtBits-bitOffset)) & BIT_MASK[bitOffset]);
+
+        amtBits -= bitOffset;
+      }
+
+      if (amtBits == bitOffset) {
+        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~BIT_MASK[bitOffset]);
+        buffer.setByte(bytePos, buffer.getByte(bytePos) | (value & BIT_MASK[bitOffset]));
+      } else {
+        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~(BIT_MASK[amtBits] << (bitOffset - amtBits)));
+        buffer.setByte(bytePos, buffer.getByte(bytePos) | (value & BIT_MASK[amtBits]) << (bitOffset - amtBits));
+      }
+
+      return this;
+    }
+
+    public PacketStream byteAccess() {
+      buffer.writerIndex((bitIndex + 7) / 8);
+
+      return this;
     }
   }
 
