@@ -242,7 +242,16 @@ public final class OS117 {
                   archives[i] = in.readInt();
                 }
 
-                System.out.println(in.readableBytes());
+                // ----- end of login decoding -----
+
+                ByteBuf response = ctx.alloc().buffer(2);
+                response.writeByte(2); // response code
+                response.writeByte(0); // TODO identify
+                response.writeByte(2); // privilege level
+                response.writeByte(0); // flagged
+                response.writeShort(1); // player index
+                response.writeByte(1); // member subscription
+                ctx.writeAndFlush(response, ctx.voidPromise());
               }
 
               break;
