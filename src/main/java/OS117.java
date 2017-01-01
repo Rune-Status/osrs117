@@ -292,22 +292,21 @@ public final class OS117 {
                 }
 
                 // player initialization
-                PacketStream stream = new PacketStream(ctx.alloc());
+                PacketStream stream = new PacketStream(ctx.alloc().buffer(4609));
                 stream.bitAccess();
 
                 stream.writeBits(30, ownPlayerLocHash);
 
-                for (int i = 1; i < (playerCap - 1); i++) {
+                for (int i = 1; i < playerCap; i++) {
                   if (i != ownPlayerIdx) {
                     stream.writeBits(18, 0);
                   }
                 }
 
-                stream.writeBits(18, 50 | 0 << 16 | 50 << 8);
                 stream.byteAccess();
 
                 // login response
-                ByteBuf response = ctx.alloc().buffer(4096);
+                ByteBuf response = ctx.alloc().buffer();
                 response.writeByte(2); // response code
                 response.writeByte(0); // TODO identify
                 response.writeInt(0);
@@ -362,8 +361,8 @@ public final class OS117 {
     private int bitIndex;
     public final ByteBuf buffer;
 
-    public PacketStream(ByteBufAllocator buffer) {
-      this.buffer = buffer.buffer(8192);
+    public PacketStream(ByteBuf buffer) {
+      this.buffer = buffer;
     }
 
     public PacketStream bitAccess() {
@@ -375,22 +374,29 @@ public final class OS117 {
     public PacketStream writeBits(int amtBits, int value) {
       int bytePos = bitIndex >> 3;
       int bitOffset = 8 - (bitIndex & 7);
-
       bitIndex += amtBits;
 
-      for(; amtBits > bitOffset; bitOffset = 8) {
-        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~BIT_MASK[bitOffset]);
-        buffer.setByte(bytePos++, buffer.getByte(bytePos) | (value >> (amtBits-bitOffset)) & BIT_MASK[bitOffset]);
+      int requiredSpace = bytePos - buffer.writerIndex() + 1;
+      requiredSpace += (amtBits + 7) / 8;
+      buffer.ensureWritable(requiredSpace);
 
+      for (; amtBits > bitOffset; bitOffset = 8) {
+        int tmp = buffer.getByte(bytePos);
+        tmp &= ~BIT_MASK[bitOffset];
+        tmp |= (value >> (amtBits-bitOffset)) & BIT_MASK[bitOffset];
+        buffer.setByte(bytePos++, tmp);
         amtBits -= bitOffset;
       }
-
       if (amtBits == bitOffset) {
-        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~BIT_MASK[bitOffset]);
-        buffer.setByte(bytePos, buffer.getByte(bytePos) | (value & BIT_MASK[bitOffset]));
+        int tmp = buffer.getByte(bytePos);
+        tmp &= ~BIT_MASK[bitOffset];
+        tmp |= value & BIT_MASK[bitOffset];
+        buffer.setByte(bytePos, tmp);
       } else {
-        buffer.setByte(bytePos, buffer.getByte(bytePos) & ~(BIT_MASK[amtBits] << (bitOffset - amtBits)));
-        buffer.setByte(bytePos, buffer.getByte(bytePos) | (value & BIT_MASK[amtBits]) << (bitOffset - amtBits));
+        int tmp = buffer.getByte(bytePos);
+        tmp &= ~(BIT_MASK[amtBits] << (bitOffset - amtBits));
+        tmp |= (value & BIT_MASK[amtBits]) << (bitOffset - amtBits);
+        buffer.setByte(bytePos, tmp);
       }
 
       return this;
